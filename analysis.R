@@ -240,6 +240,8 @@ for (i in 1:length(countries_to_run)) {
     ungroup() %>%
     mutate(Bottom20 = ifelse(Wealth_Quintile == "1", 1, 0),
            Top20 = ifelse(Wealth_Quintile == "5", 1, 0),
+           # we need to try to standardize educational attainment (highest level attended)
+           educ_att = dense_rank(educ_att),
            educ_att = factor(educ_att)) %>%
     drop_na()
   
@@ -257,7 +259,8 @@ for (i in 1:length(countries_to_run)) {
   
   
   
-  fe_lp_skill = plm(ICT_any_skill ~ Sex + factor(educ_att) + Age_16 + Age_17 + Age_18 + Age_19 + Age_20 + Age_21 + Age_22 + Age_23 + Age_24,
+  fe_lp_skill = plm(ICT_any_skill ~ Sex + factor(educ_att) + 
+                      Age_16 + Age_17 + Age_18 + Age_19 + Age_20 + Age_21 + Age_22 + Age_23 + Age_24,
                     index = "ID", data = fe_skill_data )
   
   #produce the tidy output with the clustered standard errors
@@ -292,16 +295,153 @@ for (i in 1:length(countries_to_run)) {
 
 ict_report = data.frame(Reduce(rbind, ict_data_rep))
 
+# Data sources table
+data_sources <-
+  ict_report %>%
+  dplyr::select(Country, Source, Year)
+
+# Creating the table with gt
+gt_data_sources <- 
+  data_sources %>%
+  gt() %>%
+  tab_header(
+    title = "Data Source Information",
+    subtitle = "Listing of Countries with Corresponding Data Sources and Years"
+  ) %>%
+  cols_label(
+    Country = "Country",
+    Source = "Data Source",
+    Year = "Year"
+  ) 
+
+gtsave(gt_data_sources, file.path(outputTables, "data_sources.html"))
+
+
+
 
 # Descriptives
+
+# Figure 1 
+
+any_skill <-
+  ict_report %>%
+  dplyr::select(ISO3, Country, contains("ICT_any_skill"))
+
+View(any_skill)
+
+names(any_skill)
+
+
+
+# Splitting the dataset into values and confidence intervals
+values <- any_skill %>% dplyr::select(ISO3, Country, contains("_Female"), contains("_Male"), -contains(c("low", "upp")))
+ci <- any_skill %>% dplyr::select(ISO3, contains("low"), contains("upp"))
+
+# Reshaping the values into long format
+values_long <- values %>%
+  pivot_longer(
+    cols = -c(ISO3, Country),
+    names_to = c("measure", "sex"),
+    names_pattern = "(.+)_(.+)",
+    values_to = "value"
+  )
+
+# Reshaping the confidence intervals into long format
+ci_long <- ci %>%
+  pivot_longer(
+    cols = -ISO3,
+    names_to = c("measure", "ci", "sex"),
+    names_pattern = "(.+)_(.+)_(.+)",
+    values_to = "ci_value"
+  ) 
+
+# Spreading the confidence intervals
+ci_wide <- ci_long %>%
+  pivot_wider(
+    names_from = ci,
+    values_from = ci_value
+  )
+
+# Joining the values with the confidence intervals
+final_data <- left_join(values_long, ci_wide, by = c("ISO3", "measure", "sex"))
+
+# Calculating medians
+medians <- final_data %>%
+  group_by(measure, sex) %>%
+  summarize(median_value = median(value, na.rm = TRUE)) %>%
+  mutate(Country = "Median")
+
+# Adding the medians to the dataset
+final_data <- bind_rows(final_data, medians)
+
+# Plotting
+ggplot(final_data, aes(x = Country, y = value, fill = sex)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  geom_errorbar(
+    aes(ymin = ci_low, ymax = ci_upp),
+    position = position_dodge(width = 0.9),
+    width = 0.25
+  ) +
+  labs(x = "Country", y = "Value", fill = "Sex") +
+  theme_minimal() +
+  coord_flip()
+
+# Creating the ggplot
+ggplot(any_skill_long, aes(x = Country, y = value, fill = Gender)) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  geom_errorbar(
+    aes(ymin = value_low, ymax = value_upp),
+    position = position_dodge(width = 0.9),
+    width = 0.25
+  ) +
+  labs(x = "Country", y = "Value", fill = "Gender") +
+  theme_minimal() +
+  coord_flip()  # Flips the axes so country is on the y-axis
 
 
 # Regressions
 
 fe_lp_regressions <- 
   data.frame(Reduce(rbind, fe_skill)) %>%
-  mutate(Sig = ifelse(p.value < 0.1, "Sig", "Not sig"))
+  mutate(Sig = ifelse(p.value <  0.1, "Sig", "Not sig"),
+        p = case_when(p.value >= 0.05 & p.value < 0.1  ~ "*",
+                      p.value >= 0.01 & p.value < 0.05 ~ "**",
+                      p.value <  0.01 ~ "***",
+                      TRUE           ~ ""),
+        pval = round(p.value, 2),
+        estimate = round(estimate, 3),
+        std.error = round(std.error, 3),
+        est = paste0( round(estimate, 3), "(", round(std.error, 3), ")", p ))
 
+reg_table <-
+  fe_lp_regressions %>%
+  dplyr::select(Country, term, estimate, std.error, pval, N_Female, N_Male) %>%
+  filter(term == "SexMale") %>%
+  # these two countries should be dropped due to the small samle size of respondents from the same hh
+  # filter(!Country %in% c("Turks and Caicos Islands", "Tuvalu")) %>%
+  # rename(`Number of respondents from the same household: Female (15-24)` = N_Female,
+  #        `Number of respondents from the same household: Male (15-24)`   = N_Male)
+
+View(reg_table)
+
+gt_reg_table <-
+  reg_table %>%
+  gt() %>%
+  tab_header(
+    title = "Country-Level Fixed-Effect Regressions",
+    subtitle = "Effect of 'Sex: Male' on probability of having digital skills "
+  ) %>%
+  cols_label(
+    Country = "Country",
+    term = "Variable",
+    estimate = "Beta",
+    std.error = "SE",
+    pval = "Sig",
+    N_Female = "Number of respondents from the same household: Female (15-24)",
+    N_Male = "Number of respondents from the same household: Male (15-24)"
+  ) 
+
+gtsave(gt_reg_table, file.path(outputTables, "fe_regression_coefs.html"))
 
 
 # Multilevel Model Analysis
@@ -309,6 +449,7 @@ fe_lp_regressions <-
 pooled_data = 
   data.frame(Reduce(rbind, mlm_dataset)) %>%  
   mutate(Sex_Male = ifelse(Sex == "Male", 1, 0)) %>%
+  # these two countries should be dropped due to the small samle size of respondents from the same hh
   filter(!Country %in% c("Turks and Caicos Islands", "Tuvalu"))
 
 

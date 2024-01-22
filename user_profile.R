@@ -45,7 +45,7 @@ if (USER == "karavan88") {
 # check if the folders exist
 stopifnot(dir.exists(projectFolder))
 
-
+metaData              <-  file.path(projectFolder, "00_metadata")
 inputData             <-  file.path(projectFolder, "01_input_data")
 rCodes                <-  file.path(projectFolder, "02_codes")
 outputData            <-  file.path(projectFolder, "03_output_data")
